@@ -42,7 +42,9 @@ Autor: Generado con Kiro (MetPy + Matplotlib)
 
 from __future__ import annotations
 
+import argparse
 import sys
+import unicodedata
 import warnings
 from datetime import datetime
 from io import StringIO
@@ -59,30 +61,60 @@ from metpy.units import units
 warnings.filterwarnings("ignore")
 
 # =============================================================================
-# CONFIGURACION -- MODIFICAR ACA
+# CATALOGO DE ESTACIONES
+# =============================================================================
+# Estaciones de radiosondeo de Argentina y de paises limitrofes que se
+# usan habitualmente como referencia para el analisis de la atmosfera
+# sobre territorio argentino (por ejemplo, Foz do Iguazu para el NEA, o
+# las estaciones chilenas para la cordillera). El nombre de la clave es
+# el que se usa para buscar la estacion por texto (ver `buscar_estacion`,
+# que ademas ignora mayusculas/minusculas y acentos).
+CATALOGO_ESTACIONES = {
+    # --- Argentina ---
+    "resistencia": "87155",
+    "corrientes": "87155",  # Resistencia es la estacion de referencia mas cercana
+    "cordoba": "87344",
+    "mendoza": "87418",
+    "buenos aires": "87585",
+    "ezeiza": "87585",
+    "santa rosa": "87623",
+    "neuquen": "87715",
+    "comodoro rivadavia": "87860",
+    # --- Paises limitrofes (usadas como referencia regional) ---
+    "foz do iguazu": "83827",
+    "foz de iguazu": "83827",
+    "iguazu": "83827",
+    "santa maria": "83937",
+    "uruguaiana": "83928",
+    "campo grande": "83612",
+    "londrina": "83768",
+    "antofagasta": "85442",
+    "santo domingo": "85586",
+    "puerto montt": "85799",
+    "punta arenas": "85934",
+}
+
+# Fuentes de datos posibles en el archivo de Wyoming. La fuente correcta
+# para una estacion NO es fija: puede variar segun la fecha (por
+# ejemplo, Foz do Iguazu se sirve como "FM35" en algunas fechas y podria
+# aparecer como "BUFR" en otras). Por eso se intentan todas en orden
+# hasta encontrar una que devuelva datos.
+FUENTES_DATOS_A_PROBAR = ["BUFR", "FM35", "UNKNOWN"]
+
+# =============================================================================
+# CONFIGURACION -- MODIFICAR ACA (o usar los argumentos de linea de
+# comandos --estacion / --fecha / --hora, que tienen prioridad sobre
+# estos valores por defecto)
 # =============================================================================
 
 # Fecha y hora UTC del sondeo (00Z o 12Z, que son las horas estandar de
 # radiosondeo). Formato: "YYYY-MM-DD HH:MM:SS"
 FECHA_HORA_UTC = "2025-01-15 12:00:00"
 
-# Codigo de estacion (WMO) de la estacion argentina a graficar. Algunos
-# codigos de estaciones argentinas con datos regulares en el archivo de
-# Wyoming:
-#
-#   87155  Resistencia Aero
-#   87344  Cordoba Aero
-#   87418  Mendoza Aero
-#   87585  Buenos Aires (Ezeiza)
-#   87623  Santa Rosa Aero
-#   87715  Neuquen Aero
-#   87860  Comodoro Rivadavia Aero
-#
-ESTACION_ID = "87585"
-
-# Fuente de datos en el archivo de Wyoming ("BUFR" es la que cubre la
-# mayoria de las estaciones sudamericanas actuales).
-FUENTE_DATOS = "BUFR"
+# Estacion a graficar. Puede ser un nombre del CATALOGO_ESTACIONES (por
+# ejemplo "Foz do Iguazu", "Cordoba", "Buenos Aires") o directamente un
+# codigo de estacion OMM (por ejemplo "87585").
+ESTACION_ID = "buenos aires"
 
 # Titulo personalizado. Si se deja en None, se autogenera con el nombre
 # de la estacion y la fecha/hora del sondeo.
@@ -107,31 +139,118 @@ PROFUNDIDAD_ML = 50 * units.hPa
 WYOMING_URL = "https://weather.uwyo.edu/wsgi/sounding"
 
 
-def descargar_sondeo(fecha_hora_utc: str, estacion_id: str, fuente: str = "BUFR"):
+def _normalizar_texto(texto: str) -> str:
+    """Pasa a minusculas y quita acentos, para poder buscar 'Foz do
+    Iguazu' escribiendo 'foz de iguacu', 'FOZ DO IGUAZU', etc."""
+    texto = texto.strip().lower()
+    texto = "".join(
+        c for c in unicodedata.normalize("NFD", texto)
+        if unicodedata.category(c) != "Mn"
+    )
+    return texto
+
+
+def buscar_estacion(nombre_o_codigo: str) -> str:
+    """
+    Resuelve el codigo de estacion OMM a partir de:
+      - un codigo numerico directo (ej. "87585"), o
+      - un nombre (o parte del nombre) presente en CATALOGO_ESTACIONES,
+        ignorando mayusculas/minusculas y acentos (ej. "Foz do Iguazu",
+        "cordoba", "Buenos Aires").
+
+    Lanza ValueError con sugerencias si no encuentra una coincidencia.
+    """
+    texto = nombre_o_codigo.strip()
+
+    # Si ya es un codigo numerico, se usa directamente.
+    if texto.isdigit():
+        return texto
+
+    clave = _normalizar_texto(texto)
+
+    # Coincidencia exacta
+    for nombre, codigo in CATALOGO_ESTACIONES.items():
+        if _normalizar_texto(nombre) == clave:
+            return codigo
+
+    # Coincidencia parcial (por si escriben solo una parte del nombre)
+    coincidencias = {
+        nombre: codigo
+        for nombre, codigo in CATALOGO_ESTACIONES.items()
+        if clave in _normalizar_texto(nombre)
+    }
+    if len(coincidencias) == 1:
+        return next(iter(coincidencias.values()))
+    if len(coincidencias) > 1:
+        opciones = ", ".join(sorted(coincidencias.keys()))
+        raise ValueError(
+            f"El nombre de estacion '{nombre_o_codigo}' es ambiguo. "
+            f"Coincide con: {opciones}. Se mas especifico."
+        )
+
+    opciones_disponibles = ", ".join(sorted(set(CATALOGO_ESTACIONES.keys())))
+    raise ValueError(
+        f"No se encontro la estacion '{nombre_o_codigo}' en el catalogo. "
+        f"Opciones disponibles: {opciones_disponibles}. "
+        "Tambien se puede usar directamente el codigo OMM (ej. '87585')."
+    )
+
+
+def descargar_sondeo(fecha_hora_utc: str, estacion_id: str, fuente: str = None):
     """
     Descarga y parsea un sondeo desde el archivo de la Universidad de
     Wyoming.
 
+    ``estacion_id`` puede ser un nombre (resuelto via `buscar_estacion`)
+    o un codigo OMM directo.
+
+    La fuente de datos ("BUFR", "FM35", etc.) no es fija por estacion:
+    puede variar segun la fecha. Si no se especifica `fuente`, se
+    intentan automaticamente todas las de FUENTES_DATOS_A_PROBAR, en
+    orden, hasta encontrar una que devuelva datos.
+
     Devuelve un DataFrame de pandas con las columnas:
     pressure, height, temperature, dewpoint, relh, mixr, direction, speed
     ademas de un diccionario con metadatos (nombre de estacion, titulo,
-    lat/lon).
+    lat/lon, fuente utilizada).
     """
-    params = {
-        "datetime": fecha_hora_utc,
-        "id": estacion_id,
-        "src": fuente,
-        "type": "TEXT:LIST",
-    }
-    resp = requests.get(WYOMING_URL, params=params, timeout=30)
-    resp.raise_for_status()
-    texto = resp.text
+    codigo_estacion = buscar_estacion(estacion_id)
+    fuentes_a_probar = [fuente] if fuente else FUENTES_DATOS_A_PROBAR
 
-    if "Unable to retrieve" in texto:
+    texto = None
+    fuente_utilizada = None
+    errores = []
+    for src in fuentes_a_probar:
+        params = {
+            "datetime": fecha_hora_utc,
+            "id": codigo_estacion,
+            "src": src,
+            "type": "TEXT:LIST",
+        }
+        try:
+            resp = requests.get(WYOMING_URL, params=params, timeout=30)
+            resp.raise_for_status()
+        except requests.RequestException as exc:
+            errores.append(f"{src}: error de red ({exc})")
+            continue
+
+        candidato = resp.text
+        if "Unable to retrieve" in candidato:
+            errores.append(f"{src}: sin datos")
+            continue
+
+        texto = candidato
+        fuente_utilizada = src
+        break
+
+    if texto is None:
+        detalle = "; ".join(errores)
         raise ValueError(
-            f"No se encontraron datos para la estacion {estacion_id} en "
-            f"{fecha_hora_utc} (fuente={fuente}). Probar otra fecha/hora "
-            "u otra estacion."
+            f"No se encontraron datos para la estacion '{estacion_id}' "
+            f"(codigo {codigo_estacion}) en {fecha_hora_utc}. "
+            f"Se probaron las fuentes {fuentes_a_probar} sin exito ({detalle}). "
+            "Probar otra fecha/hora (recordar que los sondeos solo se "
+            "lanzan a las 00Z y 12Z) u otra estacion."
         )
 
     # --- Metadatos (titulo, nombre de estacion, lat/lon) ---
@@ -195,6 +314,8 @@ def descargar_sondeo(fecha_hora_utc: str, estacion_id: str, fuente: str = "BUFR"
         "nombre_estacion": nombre_estacion,
         "lat": lat,
         "lon": lon,
+        "fuente_utilizada": fuente_utilizada,
+        "codigo_estacion": codigo_estacion,
     }
     return df, metadatos
 
@@ -334,7 +455,10 @@ def _fmt(valor, decimales=0):
 # CONSTRUCCION DEL GRAFICO
 # =============================================================================
 
-def graficar_sondeo(df, metadatos):
+def graficar_sondeo(df, metadatos, fecha_hora_utc=None, titulo_personalizado=None):
+    fecha_hora_utc = fecha_hora_utc or FECHA_HORA_UTC
+    titulo_personalizado = titulo_personalizado or TITULO_PERSONALIZADO
+
     p = df["pressure"].values * units.hPa
     z = df["height"].values * units.m
     T = df["temperature"].values * units.degC
@@ -529,13 +653,13 @@ def graficar_sondeo(df, metadatos):
     # -------------------------------------------------------------------
     # Titulo general
     # -------------------------------------------------------------------
-    if TITULO_PERSONALIZADO:
-        titulo = TITULO_PERSONALIZADO
+    if titulo_personalizado:
+        titulo = titulo_personalizado
     else:
-        fecha_dt = datetime.strptime(FECHA_HORA_UTC, "%Y-%m-%d %H:%M:%S")
+        fecha_dt = datetime.strptime(fecha_hora_utc, "%Y-%m-%d %H:%M:%S")
         titulo = (
             f"{fecha_dt.strftime('%d %b %Y')} {fecha_dt.strftime('%H')}Z Sondeo\n"
-            f"{metadatos.get('nombre_estacion', ESTACION_ID)}"
+            f"{metadatos.get('nombre_estacion', '')}"
         )
     fig.suptitle(titulo, fontsize=13, weight="bold", y=0.98)
 
@@ -580,7 +704,7 @@ def _dibujar_indices_dos_columnas(fig, rect, filas_izquierda, filas_derecha):
     col1_val_x = x0 + w * 0.30
 
     col2_label_x = x0 + w * 0.52
-    col2_val_x = x0 + w * 0.86
+    col2_val_x = x0 + w * 0.83
 
     for i, (etiqueta, valor) in enumerate(filas_izquierda):
         y = top - i * paso
@@ -594,28 +718,83 @@ def _dibujar_indices_dos_columnas(fig, rect, filas_izquierda, filas_derecha):
         fig.text(col2_label_x, y, etiqueta, ha="left", va="center",
                   fontsize=8.6, weight="bold", family="sans-serif")
         fig.text(col2_val_x, y, valor, ha="left", va="center",
-                  fontsize=8.6, color="navy", family="sans-serif")
+                  fontsize=8.1, color="navy", family="sans-serif")
 
 
 # =============================================================================
 # MAIN
 # =============================================================================
 
+def parsear_argumentos():
+    """
+    Argumentos de linea de comandos, todos opcionales. Si no se pasan,
+    se usan los valores definidos en la seccion CONFIGURACION al inicio
+    del archivo.
+
+    Ejemplos:
+        python sounding_plot.py --estacion "Foz do Iguazu" --fecha 2025-11-07 --hora 12
+        python sounding_plot.py --estacion 87585 --fecha 2025-01-15 --hora 00
+    """
+    parser = argparse.ArgumentParser(
+        description="Grafica un sondeo meteorologico (Skew-T + hodografo + "
+        "indices) para una estacion y fecha/hora dadas."
+    )
+    parser.add_argument(
+        "--estacion", "-e", default=None,
+        help="Nombre (ej. 'Foz do Iguazu', 'Cordoba') o codigo OMM "
+        "(ej. '87585') de la estacion.",
+    )
+    parser.add_argument(
+        "--fecha", "-f", default=None,
+        help="Fecha del sondeo en formato YYYY-MM-DD (ej. 2025-11-07).",
+    )
+    parser.add_argument(
+        "--hora", "-H", default=None,
+        help="Hora UTC del sondeo: '00' o '12' (las horas estandar de "
+        "radiosondeo).",
+    )
+    parser.add_argument(
+        "--salida", "-o", default=None,
+        help="Nombre del archivo PNG de salida.",
+    )
+    parser.add_argument(
+        "--sin-ventana", action="store_true",
+        help="No abrir la ventana interactiva de Matplotlib al finalizar "
+        "(solo guarda el PNG). Util para uso no interactivo.",
+    )
+    return parser.parse_args()
+
+
 def main():
-    print(f"Descargando sondeo: estacion {ESTACION_ID}, {FECHA_HORA_UTC} UTC ...")
+    args = parsear_argumentos()
+
+    estacion_id = args.estacion or ESTACION_ID
+
+    if args.fecha:
+        hora = (args.hora or "12").zfill(2)
+        fecha_hora_utc = f"{args.fecha} {hora}:00:00"
+    else:
+        fecha_hora_utc = FECHA_HORA_UTC
+
+    archivo_salida = args.salida or ARCHIVO_SALIDA
+
+    print(f"Descargando sondeo: estacion '{estacion_id}', {fecha_hora_utc} UTC ...")
     try:
-        df, metadatos = descargar_sondeo(FECHA_HORA_UTC, ESTACION_ID, FUENTE_DATOS)
+        df, metadatos = descargar_sondeo(fecha_hora_utc, estacion_id)
     except Exception as exc:
         print(f"ERROR al descargar el sondeo: {exc}", file=sys.stderr)
         sys.exit(1)
 
     print(f"Estacion: {metadatos.get('nombre_estacion')}")
+    print(f"Fuente de datos utilizada: {metadatos.get('fuente_utilizada')}")
     print(f"Niveles de datos: {len(df)}")
 
-    fig = graficar_sondeo(df, metadatos)
-    fig.savefig(ARCHIVO_SALIDA, dpi=150, facecolor="white", bbox_inches="tight")
-    print(f"Grafico guardado en: {ARCHIVO_SALIDA}")
-    plt.show()
+    fig = graficar_sondeo(df, metadatos, fecha_hora_utc=fecha_hora_utc)
+    fig.savefig(archivo_salida, dpi=150, facecolor="white", bbox_inches="tight")
+    print(f"Grafico guardado en: {archivo_salida}")
+
+    if not args.sin_ventana:
+        plt.show()
 
 
 if __name__ == "__main__":
