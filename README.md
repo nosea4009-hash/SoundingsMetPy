@@ -55,12 +55,42 @@ entorno conda ya activado).
 
 ## Uso
 
+### Opcion A: linea de comandos (recomendada, no requiere editar el archivo)
+
+```bash
+python sounding_plot.py --estacion "Foz do Iguazu" --fecha 2025-11-07 --hora 12
+python sounding_plot.py --estacion "Cordoba" --fecha 2025-01-15 --hora 12
+python sounding_plot.py --estacion 87585 --fecha 2025-01-15 --hora 00
+```
+
+Argumentos disponibles:
+
+| Argumento          | Descripcion                                                        |
+|--------------------|---------------------------------------------------------------------|
+| `--estacion`, `-e` | Nombre (ver tabla abajo) o codigo OMM de la estacion.               |
+| `--fecha`, `-f`    | Fecha del sondeo, formato `YYYY-MM-DD`.                             |
+| `--hora`, `-H`     | Hora UTC del sondeo: `00` o `12` (horas estandar de radiosondeo).   |
+| `--salida`, `-o`   | Nombre del archivo PNG de salida (por defecto `sondeo.png`).        |
+| `--sin-ventana`    | No abrir la ventana interactiva de Matplotlib (solo guarda el PNG). |
+
+La busqueda de estacion por nombre ignora mayusculas/minusculas y
+acentos (por ejemplo, "foz de iguacu", "FOZ DO IGUAZU" y "Foz do
+Iguazu" resuelven a la misma estacion).
+
+**Nota sobre la fuente de datos:** el archivo de Wyoming sirve los datos
+bajo distintas "fuentes" (`BUFR`, `FM35`, etc.) segun la fecha, y no es
+fija por estacion. El script prueba automaticamente todas las fuentes
+conocidas hasta encontrar una con datos disponibles, por lo que no hace
+falta indicarla manualmente.
+
+### Opcion B: editar la seccion CONFIGURACION
+
 1. Abrir `sounding_plot.py` en VSCode.
 2. Editar la seccion `CONFIGURACION` al inicio del archivo:
    - `FECHA_HORA_UTC`: fecha/hora del sondeo (00Z o 12Z), formato
      `"YYYY-MM-DD HH:MM:SS"`.
-   - `ESTACION_ID`: codigo OMM de la estacion (ver lista de ejemplos en
-     los comentarios del script).
+   - `ESTACION_ID`: nombre (ver tabla abajo) o codigo OMM de la
+     estacion.
    - `HODO_CMAP`: colormap para el hodografo (por defecto `"CMRmap"`).
 3. Ejecutar:
 
@@ -68,18 +98,32 @@ entorno conda ya activado).
    python sounding_plot.py
    ```
 
-4. El script descarga el sondeo, calcula los indices e imprime un PNG
-   (`sondeo.png` por defecto) en el mismo directorio, ademas de abrir
-   una ventana con el grafico.
+En ambos casos, el script descarga el sondeo, calcula los indices e
+imprime un PNG (`sondeo.png` por defecto) en el mismo directorio,
+ademas de abrir una ventana con el grafico (salvo que se use
+`--sin-ventana`).
 
-## Estaciones argentinas de ejemplo
+## Estaciones disponibles (catalogo `CATALOGO_ESTACIONES`)
 
-| Codigo | Estacion                  |
-|--------|----------------------------|
-| 87155  | Resistencia Aero           |
-| 87344  | Cordoba Aero                |
-| 87418  | Mendoza Aero                 |
-| 87585  | Buenos Aires (Ezeiza)        |
-| 87623  | Santa Rosa Aero              |
-| 87715  | Neuquen Aero                 |
-| 87860  | Comodoro Rivadavia Aero      |
+| Nombre a usar en `--estacion` | Codigo | Estacion                        | Pais      |
+|--------------------------------|--------|----------------------------------|-----------|
+| `resistencia` / `corrientes`  | 87155  | Resistencia Aero                 | Argentina |
+| `cordoba`                      | 87344  | Cordoba Aero                     | Argentina |
+| `mendoza`                      | 87418  | Mendoza Aero                      | Argentina |
+| `buenos aires` / `ezeiza`     | 87585  | Buenos Aires (Ezeiza)             | Argentina |
+| `santa rosa`                   | 87623  | Santa Rosa Aero                  | Argentina |
+| `neuquen`                      | 87715  | Neuquen Aero                     | Argentina |
+| `comodoro rivadavia`           | 87860  | Comodoro Rivadavia Aero          | Argentina |
+| `foz do iguazu` / `iguazu`    | 83827  | Foz do Iguacu (Aeroporto)        | Brasil    |
+| `santa maria`                  | 83937  | Santa Maria (Aeroporto)          | Brasil    |
+| `uruguaiana`                   | 83928  | Uruguaiana (Aeroporto)           | Brasil    |
+| `campo grande`                 | 83612  | Campo Grande (Aeroporto)         | Brasil    |
+| `londrina`                     | 83768  | Londrina (Aeroporto)              | Brasil    |
+| `antofagasta`                  | 85442  | Antofagasta                      | Chile     |
+| `santo domingo`                 | 85586  | Santo Domingo                    | Chile     |
+| `puerto montt`                 | 85799  | Puerto Montt                     | Chile     |
+| `punta arenas`                 | 85934  | Punta Arenas                     | Chile     |
+
+Tambien se puede usar directamente el codigo OMM si se prefiere. Si el
+nombre no se encuentra, el script muestra la lista completa de opciones
+disponibles.
